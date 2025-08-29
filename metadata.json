@@ -1,0 +1,10 @@
+{
+  "description": "Simple window icons display for current workspace. Shows window icons for the active workspace. Highlights the currently focused window. Click an icon to focus or minimize the corresponding window. Clean and minimal design. No configuration required.",
+  "name": "Show Active Windows",
+  "shell-version": [
+    "48"
+  ],
+  "url": "",
+  "uuid": "show-active-windows@mohwald",
+  "version": 1
+}
