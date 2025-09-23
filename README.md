@@ -1,5 +1,7 @@
 # Show Active Windows
 
+![](https://extensions.gnome.org/extension-data/screenshots/screenshot_8569.png)
+
 A minimal vibecoded GNOME Shell extension that displays icons for all open windows in the current workspace on your top panel.
 
 ## Features
