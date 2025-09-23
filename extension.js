@@ -2,7 +2,6 @@
 //    GNOME Shell extension
 //    Simple window icons display for current workspace
 
-import Clutter from 'gi://Clutter';
 import GObject from 'gi://GObject';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
@@ -10,7 +9,6 @@ import St from 'gi://St';
 import GLib from 'gi://GLib';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
 const ICON_SIZE = 22;
 
@@ -33,12 +31,13 @@ const WindowButton = GObject.registerClass(
             this._connectSignals();
 
             // Try to refresh icon after a short delay, in case app mapping appears later
-            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+            this._timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
                 let app = Shell.WindowTracker.get_default().get_window_app(this._window);
                 if (app && app !== this._app) {
                     this._app = app;
                     this._updateIcon();
                 }
+                this._timeoutId = null;
                 return GLib.SOURCE_REMOVE;
             });
         }
@@ -119,6 +118,11 @@ const WindowButton = GObject.registerClass(
         }
 
         destroy() {
+            if (this._timeoutId) {
+                GLib.Source.remove(this._timeoutId);
+                this._timeoutId = null;
+            }
+
             if (this._window && this._signalHandlerIds) {
                 this._signalHandlerIds.forEach(handlerId => {
                     try { this._window.disconnect(handlerId); } catch (e) {}
@@ -141,6 +145,10 @@ const WindowIcons = GObject.registerClass(
                 style_class: 'window-icons-box'
             });
 
+            // Store references to global objects
+            this._display = global.display;
+            this._workspaceManager = global.workspace_manager;
+
             // Add the box to the left side of the panel
             Main.panel._leftBox.insert_child_at_index(this._box, 1);
 
@@ -152,21 +160,21 @@ const WindowIcons = GObject.registerClass(
         _connectSignals() {
             // Listen for new windows
             this._signalHandlers.push(
-                global.display.connect('window-created', (display, window) => {
+                this._display.connect('window-created', (display, window) => {
                     this._addWindow(window);
                 })
             );
 
             // Listen for workspace changes
             this._signalHandlers.push(
-                global.workspace_manager.connect('active-workspace-changed', () => {
+                this._workspaceManager.connect('active-workspace-changed', () => {
                     this._updateWindowList();
                 })
             );
 
             // Listen for window focus changes
             this._signalHandlers.push(
-                global.display.connect('notify::focus-window', () => {
+                this._display.connect('notify::focus-window', () => {
                     this._updateAllButtons();
                 })
             );
@@ -184,7 +192,7 @@ const WindowIcons = GObject.registerClass(
                 return false;
             }
 
-            let activeWorkspace = global.workspace_manager.get_active_workspace();
+            let activeWorkspace = this._workspaceManager.get_active_workspace();
             return window.located_on_workspace(activeWorkspace);
         }
 
@@ -236,7 +244,7 @@ const WindowIcons = GObject.registerClass(
             this._windowButtons.clear();
 
             // Get windows from active workspace
-            let activeWorkspace = global.workspace_manager.get_active_workspace();
+            let activeWorkspace = this._workspaceManager.get_active_workspace();
             let windows = activeWorkspace.list_windows();
 
             windows.forEach(window => {
@@ -270,8 +278,8 @@ const WindowIcons = GObject.registerClass(
             // Disconnect only our signals
             this._signalHandlers.forEach(handlerId => {
                 if (handlerId) {
-                    try { global.display.disconnect(handlerId); } catch (e) {}
-                    try { global.workspace_manager.disconnect(handlerId); } catch (e) {}
+                    try { this._display.disconnect(handlerId); } catch (e) {}
+                    try { this._workspaceManager.disconnect(handlerId); } catch (e) {}
                 }
             });
             this._signalHandlers = [];
