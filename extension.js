@@ -14,7 +14,7 @@ const ICON_SIZE = 22;
 
 const WindowButton = GObject.registerClass(
     class WindowButton extends St.Button {
-        _init(window) {
+        _init(window, windowIcons) {
             super._init({
                 style_class: 'window-button',
                 reactive: true,
@@ -23,6 +23,7 @@ const WindowButton = GObject.registerClass(
             });
 
             this._window = window;
+            this._windowIcons = windowIcons;
             this._app = Shell.WindowTracker.get_default().get_window_app(this._window);
 
             this._createIcon();
@@ -73,23 +74,13 @@ const WindowButton = GObject.registerClass(
         }
 
         _connectSignals() {
-            this._signalHandlerIds = [];
-            this._signalHandlerIds.push(
-                this.connect('clicked', () => this._onClicked())
-            );
-            this._signalHandlerIds.push(
-                this._window.connect('notify::appears-focused', () => this._updateAppearance())
-            );
-            this._signalHandlerIds.push(
-                this._window.connect('unmanaging', () => this._onWindowUnmanaging())
-            );
-            // Listen for changes in WM_CLASS and TITLE to refresh icon
-            this._signalHandlerIds.push(
-                this._window.connect('notify::wm-class', () => this._updateIcon())
-            );
-            this._signalHandlerIds.push(
-                this._window.connect('notify::title', () => this._updateIcon())
-            );
+            this.connect('clicked', () => this._onClicked());
+            this._signalHandlerIds = [
+                this._window.connect('notify::appears-focused', () => this._updateAppearance()),
+                this._window.connect('unmanaging', () => this._onWindowUnmanaging()),
+                this._window.connect('notify::wm-class', () => this._updateIcon()),
+                this._window.connect('notify::title', () => this._updateIcon()),
+            ];
         }
 
         _onClicked() {
@@ -114,7 +105,11 @@ const WindowButton = GObject.registerClass(
         }
 
         _onWindowUnmanaging() {
-            this.destroy();
+            // Delegate to the parent so the full cleanup path runs: the
+            // workspace-changed handler is disconnected, the button is
+            // destroyed, and its entry is removed from _windowButtons. This
+            // prevents later iterations from touching a disposed button.
+            this._windowIcons._removeWindow(this._window);
         }
 
         destroy() {
@@ -123,12 +118,8 @@ const WindowButton = GObject.registerClass(
                 this._timeoutId = null;
             }
 
-            if (this._window && this._signalHandlerIds) {
-                this._signalHandlerIds.forEach(handlerId => {
-                    try { this._window.disconnect(handlerId); } catch (e) {}
-                });
-                this._signalHandlerIds = [];
-            }
+            this._signalHandlerIds.forEach(id => this._window.disconnect(id));
+            this._signalHandlerIds = [];
             super.destroy();
         }
 
@@ -152,32 +143,16 @@ const WindowIcons = GObject.registerClass(
             // Add the box to the left side of the panel
             Main.panel._leftBox.insert_child_at_index(this._box, 1);
 
-            this._signalHandlers = [];
             this._updateWindowList();
             this._connectSignals();
         }
 
         _connectSignals() {
-            // Listen for new windows
-            this._signalHandlers.push(
-                this._display.connect('window-created', (display, window) => {
-                    this._addWindow(window);
-                })
-            );
-
-            // Listen for workspace changes
-            this._signalHandlers.push(
-                this._workspaceManager.connect('active-workspace-changed', () => {
-                    this._updateWindowList();
-                })
-            );
-
-            // Listen for window focus changes
-            this._signalHandlers.push(
-                this._display.connect('notify::focus-window', () => {
-                    this._updateAllButtons();
-                })
-            );
+            this._signalHandlers = [
+                {obj: this._display, id: this._display.connect('window-created', (_display, window) => this._addWindow(window))},
+                {obj: this._workspaceManager, id: this._workspaceManager.connect('active-workspace-changed', () => this._updateWindowList())},
+                {obj: this._display, id: this._display.connect('notify::focus-window', () => this._updateAllButtons())},
+            ];
         }
 
         _shouldShowWindow(window) {
@@ -205,7 +180,7 @@ const WindowIcons = GObject.registerClass(
                 return;
             }
 
-            let button = new WindowButton(window);
+            let button = new WindowButton(window, this);
             this._windowButtons.set(window, button);
             this._box.add_child(button);
 
@@ -225,31 +200,29 @@ const WindowIcons = GObject.registerClass(
         _removeWindow(window) {
             let button = this._windowButtons.get(window);
             if (button) {
+                // Delete from map BEFORE destroy() so that any re-entrant signal
+                // handlers (e.g. notify::focus-window firing during super.destroy())
+                // cannot find a disposed button when iterating _windowButtons.
+                this._windowButtons.delete(window);
                 if (button._workspaceChangedHandlerId) {
                     window.disconnect(button._workspaceChangedHandlerId);
                 }
                 button.destroy();
-                this._windowButtons.delete(window);
             }
         }
 
         _updateWindowList() {
-            // Clear existing buttons
-            this._windowButtons.forEach((button, window) => {
+            const toDestroy = new Map(this._windowButtons);
+            this._windowButtons.clear();
+            toDestroy.forEach((button, window) => {
                 if (button._workspaceChangedHandlerId) {
                     window.disconnect(button._workspaceChangedHandlerId);
                 }
                 button.destroy();
             });
-            this._windowButtons.clear();
 
-            // Get windows from active workspace
             let activeWorkspace = this._workspaceManager.get_active_workspace();
-            let windows = activeWorkspace.list_windows();
-
-            windows.forEach(window => {
-                this._addWindow(window);
-            });
+            activeWorkspace.list_windows().forEach(window => this._addWindow(window));
         }
 
         _updateAllButtons() {
@@ -259,14 +232,14 @@ const WindowIcons = GObject.registerClass(
         }
 
         destroy() {
-            // Destroy all window buttons and disconnect per-window signals
-            this._windowButtons.forEach((button, window) => {
+            const toDestroy = new Map(this._windowButtons);
+            this._windowButtons.clear();
+            toDestroy.forEach((button, window) => {
                 if (button._workspaceChangedHandlerId) {
                     window.disconnect(button._workspaceChangedHandlerId);
                 }
                 button.destroy();
             });
-            this._windowButtons.clear();
 
             // Remove the icon box from the panel if it exists
             if (this._box && Main.panel._leftBox.get_children().includes(this._box)) {
@@ -275,13 +248,7 @@ const WindowIcons = GObject.registerClass(
                 this._box = null;
             }
 
-            // Disconnect only our signals
-            this._signalHandlers.forEach(handlerId => {
-                if (handlerId) {
-                    try { this._display.disconnect(handlerId); } catch (e) {}
-                    try { this._workspaceManager.disconnect(handlerId); } catch (e) {}
-                }
-            });
+            this._signalHandlers.forEach(({obj, id}) => obj.disconnect(id));
             this._signalHandlers = [];
         }
     }
